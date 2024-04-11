@@ -29,7 +29,9 @@ use atomic_polyfill as atomic;
 use core::sync::atomic;
 
 use alloc::boxed::Box;
-use atomic::{AtomicUsize, Ordering};
+#[cfg(target_has_atomic = "ptr")]
+use atomic::AtomicUsize;
+use atomic::Ordering;
 use core::any::{Any, TypeId};
 use core::fmt;
 use core::hash::BuildHasher;
@@ -112,7 +114,7 @@ cfg_if::cfg_if! {
 }
 
 cfg_if::cfg_if! {
-    if #[cfg(not(all(target_arch = "arm", target_os = "none")))] {
+    if #[cfg(not(any(all(target_arch = "arm", target_os = "none"),target_arch = "riscv32")))] {
         use once_cell::race::OnceBox;
 
         static RAND_SOURCE: OnceBox<Box<dyn RandomSource + Send + Sync>> = OnceBox::new();
@@ -133,6 +135,29 @@ pub trait RandomSource {
     fn gen_hasher_seed(&self) -> usize;
 }
 
+/// A fake AtomicUsize for platforms without one
+#[cfg(not(target_has_atomic = "ptr"))]
+struct AtomicUsize(usize);
+
+#[cfg(not(target_has_atomic = "ptr"))]
+impl AtomicUsize {
+    pub const fn new(a: usize) -> Self {
+        Self(a)
+    }
+
+    pub fn load(&self, _: Ordering) -> usize {
+        return self.0;
+    }
+
+    pub fn store(&self, new: usize, _: Ordering) {
+        unsafe {
+            let sc = self.0 as *const usize;
+            let s = sc as *mut usize;
+            *s = new;
+        }
+    }
+}
+
 struct DefaultRandomSource {
     counter: AtomicUsize,
 }
@@ -144,7 +169,7 @@ impl DefaultRandomSource {
         }
     }
 
-    #[cfg(all(target_arch = "arm", target_os = "none"))]
+    #[cfg(any(all(target_arch = "arm", target_os = "none"), target_arch = "riscv32"))]
     const fn default() -> DefaultRandomSource {
         DefaultRandomSource {
             counter: AtomicUsize::new(PI[3] as usize),
@@ -154,7 +179,7 @@ impl DefaultRandomSource {
 
 impl RandomSource for DefaultRandomSource {
     cfg_if::cfg_if! {
-        if #[cfg(all(target_arch = "arm", target_os = "none"))] {
+        if #[cfg(any(all(target_arch = "arm", target_os = "none"), target_arch="riscv32"))] {
             fn gen_hasher_seed(&self) -> usize {
                 let stack = self as *const _ as usize;
                 let previous = self.counter.load(Ordering::Relaxed);
@@ -172,7 +197,7 @@ impl RandomSource for DefaultRandomSource {
 }
 
 cfg_if::cfg_if! {
-        if #[cfg(all(target_arch = "arm", target_os = "none"))] {
+        if #[cfg(any(all(target_arch = "arm", target_os = "none"), target_arch = "riscv32"))] {
             #[inline]
             fn get_src() -> &'static dyn RandomSource {
                 static RAND_SOURCE: DefaultRandomSource = DefaultRandomSource::default();
@@ -187,7 +212,7 @@ cfg_if::cfg_if! {
             /// The source of randomness can only be set once, and must be set before the first RandomState is created.
             /// If the source has already been specified `Err` is returned with a `bool` indicating if the set failed because
             /// method was previously invoked (true) or if the default source is already being used (false).
-            #[cfg(not(all(target_arch = "arm", target_os = "none")))]
+            #[cfg(not(any(all(target_arch = "arm", target_os = "none"), target_arch = "riscv32")))]
             pub fn set_random_source(source: impl RandomSource + Send + Sync + 'static) -> Result<(), bool> {
                 RAND_SOURCE.set(Box::new(Box::new(source))).map_err(|s| s.as_ref().type_id() != TypeId::of::<&DefaultRandomSource>())
             }
